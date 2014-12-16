@@ -1,0 +1,179 @@
+#!/usr/bin/env python
+import json
+from functools import reduce
+
+import os.path, os
+import sys
+import threading
+import pythoncom
+import win32com.client as win32
+
+import difflib
+from watchdog.observers import Observer
+from watchdog.events import PatternMatchingEventHandler
+
+xlfilename = sys.argv[1]
+fullfilename = os.path.abspath(xlfilename)
+
+print("Monitoring", xlfilename)
+
+
+observer = Observer()
+
+class CallbackEventHandler(PatternMatchingEventHandler):
+	'''
+		This class calls a callback whenever a file that matches
+		has changed after a delay.
+
+		The callback is thus called once per file in a short time window.
+	'''
+
+	def __init__(self, callback, *args, **kw):
+		super(CallbackEventHandler, self).__init__(*args, **kw)
+		self.files = set()
+		self.timer = None
+		self.callback = callback
+
+	def on_any_event(self, event):
+		if event.src_path.lower().endswith(".tmp") or getattr(event, 'dest_path', '').lower().endswith('.tmp'):
+			return
+
+		self.files.add(event.dest_path if hasattr(event, 'dest_path') else event.src_path)
+		if self.timer:
+			self.timer.cancel()
+		self.timer = threading.Timer(0.5, self.trigger_changes)
+		self.timer.start()
+		# print(event)
+
+	def trigger_changes(self):
+		for file in self.files:
+			self.callback(file)
+		self.files = set()
+
+
+def read_contents(fname):
+	f = open(fname, 'rb')
+	res = f.read().decode('utf-16')
+	f.close()
+	return res
+
+def write_contents(fname, contents):
+	f = open(fname, 'wb')
+	# We use utf-16 as this is what windows applications seem to use internally.
+	f.write(contents.encode('utf-16'))
+	f.close()
+	print(" >> Updated module `{0}` from excel".format(fname))
+
+def update_module(wb, name, code):
+	comp = wb.VBProject.VBComponents(name)
+
+	if not comp:
+		print("Module {name} does not exist in the workbook, not updating".format(name=name))
+		return
+
+	cm = comp.CodeModule
+
+	lines = cm.CountOfLines
+	if lines > 0:
+		cm.DeleteLines(1, lines)
+
+	cm.AddFromString(code)
+	print(" << Updated module `{0}`".format(name))
+
+def get_module(wb, name):
+	'''
+		Get the module content from the workbook.
+	'''
+
+	cm = wb.VBProject.VBComponents(name).CodeModule
+	if cm.CountOfLines == 0:
+		return ''
+	return cm.Lines(1, cm.CountOfLines)
+
+def get_modules(wb):
+	'''
+		Get all modules contents from the workbook and return a dictionary.
+	'''
+
+	res = dict()
+	for cmo in wb.VBProject.VBComponents:
+		cm = cmo.CodeModule
+		res[cmo.Name] = get_module(wb, cmo.Name)
+	return res
+
+
+def get_workbook():
+	'''
+		Get the workbook we're working on.
+	'''
+
+	# Necessary when running in multi-threaded python code to
+	# communicate with COM.
+	pythoncom.CoInitialize()
+
+	App = win32.gencache.EnsureDispatch('Excel.Application')
+	wb = None
+
+	for wbo in App.Workbooks:
+		if wbo.FullName == fullfilename:
+			wb = wbo
+			break
+
+	if not wb:
+		print("This file is not open in excel, not doing anything.")
+
+	return wb
+
+def module_updated(file):
+	'''
+		Called whenever a .bas file module is updated.
+	'''
+
+	wb = get_workbook()
+	if not wb: return
+
+	name = str(os.path.basename(file))[:-4]
+
+	if name in recently_updated:
+		# Ça sera cleared plus tard.
+		return
+
+	update_module(wb, name, read_contents(file))
+
+recently_updated = set()
+
+def excel_updated(file):
+	'''
+		Called whenever the watched excel file was saved on the filesystem.
+	'''
+
+	wb = get_workbook()
+	if not wb: return
+
+	print(file, 'updated, merging changes.')
+
+	# We get all the modules of the file and write them to disk.
+	for name, xlcontents in get_modules(wb).items():
+		recently_updated.add(name)
+		write_contents(name + '.bas', xlcontents)
+
+	# the recently_updated set is used to prevent events to re-update
+	# code from the filesystem when it was just updated from excel.
+	threading.Timer(1, lambda: recently_updated.clear()).start()
+
+
+if __name__ == "__main__":
+	event_handler = CallbackEventHandler(module_updated, ['*.bas'])
+	event_handler_xl = CallbackEventHandler(excel_updated, ['*.xls', '*.xlsm', '*.xlsb'])
+
+	observer = Observer()
+	observer.schedule(event_handler, '.', recursive=True)
+	observer.schedule(event_handler_xl, '..')
+	observer.start()
+	try:
+		import time
+		while True:
+			time.sleep(2)
+	except KeyboardInterrupt:
+		observer.stop()
+	observer.join()

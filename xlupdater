@@ -58,14 +58,14 @@ class CallbackEventHandler(PatternMatchingEventHandler):
 
 def read_contents(fname):
 	f = open(fname, 'rb')
-	res = f.read().decode('utf-16')
+	res = f.read().decode('utf-8').encode('utf-16').decode('utf-16')
 	f.close()
 	return res
 
 def write_contents(fname, contents):
 	f = open(fname, 'wb')
 	# We use utf-16 as this is what windows applications seem to use internally.
-	f.write(contents.encode('utf-16'))
+	f.write(contents.encode('utf-8'))
 	f.close()
 	print(" >> Updated module `{0}` from excel".format(fname))
 

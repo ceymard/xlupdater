@@ -17,6 +17,11 @@ fullfilename = os.path.abspath(xlfilename)
 
 print("Monitoring", xlfilename)
 
+TYPE_MODULE = 1
+TYPE_CLASS = 2
+TYPE_FORM = 3
+TYPE_ACTIVEX = 11
+TYPE_DOCUMENT = 100 # ????
 
 observer = Observer()
 
@@ -95,11 +100,13 @@ def get_modules(wb):
 		Get all modules contents from the workbook and return a dictionary.
 	'''
 
-	res = dict()
+	# res = dict()
 	for cmo in wb.VBProject.VBComponents:
-		cm = cmo.CodeModule
-		res[cmo.Name] = get_module(wb, cmo.Name)
-	return res
+		yield cmo.Name, cmo.Type, get_module(wb, cmo.Name)
+		# cm = cmo.CodeModule
+		# type = cmo.Type
+		# res[cmo.Name] = get_module(wb, cmo.Name)
+	# return res
 
 
 def get_workbook():
@@ -153,9 +160,23 @@ def excel_updated(file):
 	print(file, 'updated, merging changes.')
 
 	# We get all the modules of the file and write them to disk.
-	for name, xlcontents in get_modules(wb).items():
+	for name, type, xlcontents in get_modules(wb):
+		if type not in (TYPE_MODULE, TYPE_CLASS, TYPE_DOCUMENT): continue
+
+		directory = ""
+		if type == TYPE_MODULE: directory = "Modules"
+		elif type == TYPE_CLASS: directory = "Classes"
+		elif type == TYPE_DOCUMENT: directory = "Sheets"
+
+		try:
+			os.mkdir(directory)
+		except:
+			pass
+
+		# print(xlcontents)
 		recently_updated.add(name)
-		write_contents(name + '.bas', xlcontents)
+		write_contents(directory + '\\' + name + '.bas', xlcontents)
+		# print(directory + '\\' + name + '.bas')
 
 	# the recently_updated set is used to prevent events to re-update
 	# code from the filesystem when it was just updated from excel.
